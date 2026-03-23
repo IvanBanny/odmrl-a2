@@ -267,10 +267,53 @@ def transitions(state, action):
 # Simulation helper for RL
 # -----------------------------
 def simulate_step(state, action):
-    """Sample a single next state and cost from (state, action)."""
+    """Sample a single next state and cost from (state, action).
+
+    Directly samples Poisson increments instead of building the full
+    transition distribution, for O(1) per call.
+    """
     c = cost(state, action)
-    trans = transitions(state, action)
-    next_states = list(trans.keys())
-    probs = list(trans.values())
-    idx = np.random.choice(len(next_states), p=probs)
-    return next_states[idx], c
+    x1, x2, l = state
+
+    def degrade(x, xi):
+        if x >= xi:
+            return xi
+        return min(x + np.random.poisson(lam), xi)
+
+    if l == REP_1:
+        return (0, degrade(x2, xi2), AT_1), c
+    if l == REP_2:
+        return (degrade(x1, xi1), 0, AT_2), c
+
+    if action == "maintain_1":
+        if x1 < xi1:
+            return (0, degrade(x2, xi2), AT_1), c
+        else:
+            return (xi1, degrade(x2, xi2), REP_1), c
+
+    if action == "maintain_2":
+        if x2 < xi2:
+            return (degrade(x1, xi1), 0, AT_2), c
+        else:
+            return (degrade(x1, xi1), xi2, REP_2), c
+
+    x1n = degrade(x1, xi1)
+    x2n = degrade(x2, xi2)
+
+    if action == "travel_1":
+        return (x1n, x2n, AT_1), c
+    if action == "travel_2":
+        return (x1n, x2n, AT_2), c
+    if action == "travel_depot":
+        return (x1n, x2n, DEPOT), c
+    # "nothing"
+    return (x1n, x2n, l), c
+
+
+# -----------------------------
+# Precomputed feasible action indices
+# -----------------------------
+feasible_action_indices = {
+    s: [action_index[a] for a in feasible_actions(s)]
+    for s in states
+}

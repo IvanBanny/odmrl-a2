@@ -1,11 +1,14 @@
 """Shared RL utilities across Tasks 1-4."""
 
+import os
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 from mdp import (
     gamma, DEPOT, AT_1, AT_2, REP_1, REP_2, xi1, xi2,
     states, state_index, n_states,
     ACTIONS, action_index, n_actions, feasible_actions,
+    feasible_action_indices,
     cost, transitions, simulate_step,
 )
 
@@ -52,26 +55,23 @@ def compute_reference_policy(tol=1e-10):
 
 
 def epsilon_greedy(Q, state, epsilon):
-    """Epsilon-greedy over feasible actions. Returns action string.
+    """Epsilon-greedy over feasible actions. Returns action index (int).
 
     Q: array (n_states, n_actions). Minimization.
     """
-    acts = feasible_actions(state)
-    act_idxs = [action_index[a] for a in acts]
+    act_idxs = feasible_action_indices[state]
     if np.random.random() < epsilon:
-        return np.random.choice(acts).item()
-    return acts[np.argmin(Q[state_index[state], act_idxs])]
+        return act_idxs[np.random.randint(len(act_idxs))]
+    return act_idxs[np.argmin(Q[state_index[state], act_idxs])]
 
 
 def extract_policy_tabular(Q):
     """Greedy policy from Q-table. Returns dict state -> action string."""
     policy = {}
     for s in states:
-        s_idx = state_index[s]
-        acts = feasible_actions(s)
-        act_idxs = [action_index[a] for a in acts]
-        best_a = np.argmin(Q[s_idx, act_idxs])
-        policy[s] = acts[best_a]
+        act_idxs = feasible_action_indices[s]
+        best = act_idxs[np.argmin(Q[state_index[s], act_idxs])]
+        policy[s] = ACTIONS[best]
     return policy
 
 
@@ -104,7 +104,7 @@ def compare_policies(policy, ref_policy, label=""):
             diffs.append((s, a, a_ref))
 
     tag = f" ({label})" if label else ""
-    print(f"Policy comparison{tag}: {len(diffs)}/{len(states)} states differ.")
+    print(f"\nPolicy comparison{tag}: {len(diffs)}/{len(states)} states differ.")
     for i, (s, a, a_ref) in enumerate(diffs):
         if i < 20:
             print(f"  {s}: {a} vs ref {a_ref}")
@@ -114,15 +114,70 @@ def compare_policies(policy, ref_policy, label=""):
     return len(diffs)
 
 
-def plot_convergence(values, ylabel, title, xlabel="Episode", savefig=None):
-    """Plot a convergence curve."""
+def _apply_log_axes(ax):
+    """Configure log-scale y-axis: labeled major ticks, unlabeled minor grid."""
+    ax.set_yscale("log")
+    ax.yaxis.set_major_formatter(ticker.LogFormatterSciNotation(labelOnlyBase=False))
+    ax.yaxis.set_minor_locator(ticker.LogLocator(subs="all", numticks=12))
+    ax.yaxis.set_minor_formatter(ticker.NullFormatter())
+    ax.grid(True, alpha=0.3, which="major")
+    ax.grid(True, alpha=0.15, which="minor")
+
+
+def plot_convergence(x, y, ylabel, title, xlabel="Episode", savefig=None):
+    """Plot a convergence curve (single run with smoothing)."""
     fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(values)
+    x_arr = np.asarray(x)
+    y_arr = np.asarray(y, dtype=float)
+    if len(y_arr) >= 20:
+        ax.plot(x_arr, y_arr, alpha=0.3, color="C0", label="Raw")
+        window = max(len(y_arr) // 20, 2)
+        kernel = np.ones(window) / window
+        smoothed = np.convolve(y_arr, kernel, mode="valid")
+        pad = window // 2
+        ax.plot(x_arr[pad:pad + len(smoothed)], smoothed,
+                color="C0", linewidth=2, label=f"Smoothed (w={window})")
+        ax.legend()
+    else:
+        ax.plot(x_arr, y_arr, color="C0", marker="o", markersize=4)
+    _apply_log_axes(ax)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_title(title)
-    ax.grid(True, alpha=0.3)
     fig.tight_layout()
     if savefig:
-        fig.savefig(savefig, dpi=150)
+        os.makedirs("images", exist_ok=True)
+        fig.savefig(os.path.join("images", savefig), dpi=150)
+    plt.show()
+
+
+def plot_convergence_multi(runs, ylabel, title, xlabel="Episode", savefig=None):
+    """Plot convergence from multiple parallel runs.
+
+    Args:
+        runs: list of (x_array, y_array) per seed.
+    Individual runs drawn at very low alpha; mean overlaid in full color.
+    """
+    fig, ax = plt.subplots(figsize=(8, 4))
+    # Common x grid spanning the intersection of all runs.
+    x_min = max(r[0][0] for r in runs)
+    x_max = min(r[0][-1] for r in runs)
+    common_x = np.linspace(x_min, x_max, 400)
+    ys = []
+    for x, y in runs:
+        yi = np.interp(common_x, x, y)
+        ys.append(yi)
+        ax.plot(common_x, yi, alpha=0.08, color="C0", linewidth=0.8)
+    mean_y = np.mean(ys, axis=0)
+    ax.plot(common_x, mean_y, color="C0", linewidth=2,
+            label=f"Mean ({len(runs)} runs)")
+    ax.legend()
+    _apply_log_axes(ax)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    fig.tight_layout()
+    if savefig:
+        os.makedirs("images", exist_ok=True)
+        fig.savefig(os.path.join("images", savefig), dpi=150)
     plt.show()
