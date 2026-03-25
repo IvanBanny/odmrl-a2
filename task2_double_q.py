@@ -15,8 +15,16 @@ from rl_utils import (
     extract_policy_tabular,
     print_all_policy_tables,
     compare_policies,
-    plot_convergence_multi,
+    policy_match_fraction,
+    plot_convergence_two_panel,
+    plot_bias_scatter,
+    plot_policy_diff,
+    plot_visits,
 )
+
+# Precompute reference policy once (inherited by forked workers)
+REF_POLICY, REF_V = compute_reference_policy()
+
 
 def double_q_learning(lr=0.1, lr_decay=1e-4, episodes=100000, steps=1000,
                       eps_start=1.0, eps_end=0.01, ping_ep=None):
@@ -24,6 +32,8 @@ def double_q_learning(lr=0.1, lr_decay=1e-4, episodes=100000, steps=1000,
     Q1 = np.zeros((n_states, n_actions))
     Q2 = np.zeros((n_states, n_actions))
     hist = []
+    match_hist = []
+    visit_counts = np.zeros(n_states, dtype=np.int64)
     Q_old = (Q1 + Q2).copy() if ping_ep else np.array(None)
 
     for episode in range(episodes):
@@ -32,6 +42,7 @@ def double_q_learning(lr=0.1, lr_decay=1e-4, episodes=100000, steps=1000,
         s = states[np.random.randint(n_states)]
         for _ in range(steps):
             s_idx = state_index[s]
+            visit_counts[s_idx] += 1
 
             # Choose action by behavior policy using current Q1+Q2
             a_idx = epsilon_greedy(Q1 + Q2, s, eps)
@@ -55,23 +66,30 @@ def double_q_learning(lr=0.1, lr_decay=1e-4, episodes=100000, steps=1000,
             Q_combined = (Q1 + Q2) / 2
             delta = np.abs(Q_combined - Q_old).max()
             hist.append((episode, delta))
+            match_pct = policy_match_fraction(Q_combined, REF_POLICY)
+            match_hist.append((episode, match_pct))
             Q_old = Q_combined
             if episode % (episodes // 10) < ping_ep:
-                print(f"  Episode {episode:>6d}/{episodes}  eps={eps:.3f}  max|dQ|={delta:.4f}")
+                print(f"  Episode {episode:>6d}/{episodes}  eps={eps:.3f}"
+                      f"  max|dQ|={delta:.4f}  match={match_pct:.1f}%")
 
-    return (Q1, Q2, hist) if ping_ep else (Q1, Q2)
+    return Q1, Q2, hist, match_hist, visit_counts
+
 
 N_RUNS = 20
-RUN_KWARGS = dict(lr=0.1, lr_decay=2e-4, episodes=500000, steps=1000,
-                  eps_start=1.0, eps_end=0.01, ping_ep=2000)
+RUN_KWARGS = dict(lr=0.01, lr_decay=2e-4, episodes=100000, steps=1000,
+                  eps_start=1.0, eps_end=0.0001, ping_ep=500)
 
 
 def _worker(seed):
     np.random.seed(seed)
-    Q1, Q2, hist = double_q_learning(**RUN_KWARGS)
-    x = np.array([h[0] for h in hist])
-    y = np.array([h[1] for h in hist])
-    return (Q1 + Q2) / 2, x, y
+    Q1, Q2, hist, match_hist, visits = double_q_learning(**RUN_KWARGS)
+    Q = (Q1 + Q2) / 2
+    x_dq = np.array([h[0] for h in hist])
+    y_dq = np.array([h[1] for h in hist])
+    x_m = np.array([h[0] for h in match_hist])
+    y_m = np.array([h[1] for h in match_hist])
+    return Q, x_dq, y_dq, x_m, y_m, visits
 
 
 if __name__ == "__main__":
@@ -79,17 +97,59 @@ if __name__ == "__main__":
     with mp.get_context("fork").Pool(min(N_RUNS, mp.cpu_count())) as pool:
         results = pool.map(_worker, range(N_RUNS))
 
-    Q_mean = np.mean([r[0] for r in results], axis=0)
-    runs = [(r[1], r[2]) for r in results]
-    
-    np.save("images/t2_runs.npy", np.array([(r[1], r[2]) for r in results], dtype=object))
+    all_Q = np.array([r[0] for r in results])
+    Q_mean = all_Q.mean(axis=0)
+    runs_dq = [(r[1], r[2]) for r in results]
+    runs_match = [(r[3], r[4]) for r in results]
+    all_visits = np.array([r[5] for r in results])
+    mean_visits = all_visits.mean(axis=0)
+
+    # Save intermediate data
+    np.save("images/t2_runs_dq.npy", np.array(runs_dq, dtype=object))
+    np.save("images/t2_runs_match.npy", np.array(runs_match, dtype=object))
     np.save("images/t2_Q_mean.npy", Q_mean)
+    np.save("images/t2_Q_all.npy", all_Q)
+    np.save("images/t2_visits.npy", mean_visits)
 
     policy = extract_policy_tabular(Q_mean)
-    ref_policy, ref_V = compute_reference_policy()
+    print(f"\nReference V(0,0,DEPOT) = {REF_V[(0,0,DEPOT)]:.3f}")
+
+    # Load Task 1 data for background comparison
+    t1_runs_dq = [(np.array(r[0], dtype=float), np.array(r[1], dtype=float))
+                  for r in np.load("images/t1_runs_dq.npy", allow_pickle=True)]
+    t1_runs_match = [(np.array(r[0], dtype=float), np.array(r[1], dtype=float))
+                     for r in np.load("images/t1_runs_match.npy", allow_pickle=True)]
+    t1_Q_mean = np.load("images/t1_Q_mean.npy")
+
     print_all_policy_tables(policy)
-    compare_policies(policy, ref_policy)
-    plot_convergence_multi(
-        runs, xlabel="Episode", ylabel=r"$\max |\Delta Q|$",
-        title="Double Q-Learning convergence", savefig="t2.png"
+    compare_policies(policy, REF_POLICY)
+
+    # Two-panel convergence plot
+    plot_convergence_two_panel(
+        runs_dq, runs_match,
+        title="Double Q-Learning", savefig="t2.png",
+        color="#C84430", label="Double Q",
+        bg_runs_dq=t1_runs_dq, bg_runs_match=t1_runs_match,
+        bg_color="C0", bg_label="Classic Q",
+    )
+
+    # Bias scatter - overlay both methods
+    plot_bias_scatter(
+        Q_mean, REF_V,
+        title="Value bias - Double Q vs Classic Q", savefig="t2_bias.png",
+        color="#C84430", label="Double Q",
+        Q_mean_bg=t1_Q_mean, bg_color="C0", bg_label="Classic Q",
+    )
+
+    # Policy diff heatmap
+    plot_policy_diff(
+        policy, REF_POLICY,
+        title="Double Q - Policy diff vs PI", savefig="t2_policy_diff.png",
+    )
+
+    # State visitation
+    plot_visits(
+        mean_visits,
+        title="Double Q - State visitation (mean over runs)",
+        savefig="t2_visits.png",
     )
