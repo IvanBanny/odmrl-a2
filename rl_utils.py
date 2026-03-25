@@ -115,17 +115,6 @@ def compare_policies(policy, ref_policy, label=""):
     return len(diffs)
 
 
-def simulate_reference_cost(policy, start=(0, 0, DEPOT), steps=100000):
-    """Mean cost/step under a deterministic policy by simulation."""
-    s = start
-    total = 0.0
-    for _ in range(steps):
-        a = policy[s]
-        s, c = simulate_step(s, a)
-        total += c
-    return total / steps
-
-
 def _plot_runs_on_ax(ax, runs, color="C0", label=None,
                      run_alpha=0.08, mean_alpha=1.0, mean_lw=2):
     """Overlay individual runs (low alpha) with mean on a single axis."""
@@ -154,54 +143,6 @@ def _apply_log_axes(ax):
     ax.grid(True, alpha=0.15, which="minor")
 
 
-def plot_convergence(x, y, ylabel, title, xlabel="Episode", savefig=None):
-    """Plot a convergence curve (single run with smoothing)."""
-    fig, ax = plt.subplots(figsize=(8, 4))
-    x_arr = np.asarray(x)
-    y_arr = np.asarray(y, dtype=float)
-    if len(y_arr) >= 20:
-        ax.plot(x_arr, y_arr, alpha=0.3, color="C0", label="Raw")
-        window = max(len(y_arr) // 20, 2)
-        kernel = np.ones(window) / window
-        smoothed = np.convolve(y_arr, kernel, mode="valid")
-        pad = window // 2
-        ax.plot(x_arr[pad:pad + len(smoothed)], smoothed,
-                color="C0", linewidth=2, label=f"Smoothed (w={window})")
-        ax.legend()
-    else:
-        ax.plot(x_arr, y_arr, color="C0", marker="o", markersize=4)
-    _apply_log_axes(ax)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.set_title(title)
-    fig.tight_layout()
-    if savefig:
-        os.makedirs("images", exist_ok=True)
-        fig.savefig(os.path.join("images", savefig), dpi=150)
-    plt.show()
-
-
-def plot_convergence_multi(runs, ylabel, title, xlabel="Episode", savefig=None):
-    """Plot convergence from multiple parallel runs.
-
-    Args:
-        runs: list of (x_array, y_array) per seed.
-    Individual runs drawn at very low alpha; mean overlaid in full color.
-    """
-    fig, ax = plt.subplots(figsize=(8, 4))
-    _plot_runs_on_ax(ax, runs)
-    ax.legend()
-    _apply_log_axes(ax)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.set_title(title)
-    fig.tight_layout()
-    if savefig:
-        os.makedirs("images", exist_ok=True)
-        fig.savefig(os.path.join("images", savefig), dpi=150)
-    plt.show()
-
-
 def policy_match_fraction(Q, ref_policy):
     """Fraction of states where greedy Q-policy matches ref_policy."""
     match = 0
@@ -213,36 +154,36 @@ def policy_match_fraction(Q, ref_policy):
     return match / len(states) * 100.0
 
 
-def plot_convergence_two_panel(runs_dq, runs_match,
-                               ylabel_left=r"$\max |\Delta Q|$",
+def plot_convergence_two_panel(runs_rmse, runs_match,
+                               ylabel_left=r"$\mathrm{RMSE}$ to $V^*$",
                                ylabel_right="Policy match %",
                                title="", xlabel="Episode", savefig=None,
                                color="C0", label=None,
-                               bg_runs_dq=None, bg_runs_match=None,
+                               bg_runs_rmse=None, bg_runs_match=None,
                                bg_color="C0", bg_label="Classic Q"):
-    """Two-panel convergence plot: Q-change (log) and policy match % (linear).
+    """Two-panel convergence plot: RMSE to V* (log) and policy match % (linear).
 
     Args:
-        runs_dq: list of (x, y) for max|deltaQ| per run.
+        runs_rmse: list of (x, y) for RMSE to V* per run.
         runs_match: list of (x, y) for policy match % per run.
         color: color for the main runs.
         label: label for the main mean line (default: "Mean (N runs)").
-        bg_runs_dq: optional background runs for Q-change (faint overlay).
+        bg_runs_rmse: optional background runs for RMSE (faint overlay).
         bg_runs_match: optional background runs for match % (faint overlay).
         bg_color: color for background runs.
         bg_label: legend label for background mean line.
     """
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 4.5))
 
-    # Left: max|dQ| on log scale
-    if bg_runs_dq is not None:
-        _plot_runs_on_ax(ax1, bg_runs_dq, color=bg_color, label=bg_label,
+    # Left: RMSE to V* on log scale
+    if bg_runs_rmse is not None:
+        _plot_runs_on_ax(ax1, bg_runs_rmse, color=bg_color, label=bg_label,
                          run_alpha=0.03, mean_alpha=0.35, mean_lw=1.5)
-    _plot_runs_on_ax(ax1, runs_dq, color=color, label=label)
+    _plot_runs_on_ax(ax1, runs_rmse, color=color, label=label)
     _apply_log_axes(ax1)
     ax1.set_xlabel(xlabel)
     ax1.set_ylabel(ylabel_left)
-    ax1.set_title(title + " - Q convergence")
+    ax1.set_title(title + " - RMSE convergence")
     ax1.legend()
 
     # Right: policy match % on linear scale

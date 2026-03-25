@@ -14,6 +14,7 @@ Course 2AMS40.
 | `Ass1_PI.py` | A1 model solution - only for reference |
 | `mdp.py` | MDP model from the aforementioned A1 model solution (do not modify) |
 | `rl_utils.py` | Shared utilities: reference policy, epsilon-greedy, policy display/comparison, plotting |
+| `task1_sweep.py` | Task 1 hyperparameter sweep |
 | `task1_qlearning.py` | Task 1 |
 | `task2_double_q.py` | Task 2 |
 | `task3_linear_approx.py` | Task 3 (needs custom action selection - weights, not Q-table) |

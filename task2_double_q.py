@@ -16,6 +16,7 @@ from rl_utils import (
     print_all_policy_tables,
     compare_policies,
     policy_match_fraction,
+    min_q_values,
     plot_convergence_two_panel,
     plot_bias_scatter,
     plot_policy_diff,
@@ -24,6 +25,7 @@ from rl_utils import (
 
 # Precompute reference policy once (inherited by forked workers)
 REF_POLICY, REF_V = compute_reference_policy()
+REF_V_ARR = np.array([REF_V[s] for s in states])
 
 
 def double_q_learning(lr=0.1, lr_decay=1e-4, episodes=100000, steps=1000,
@@ -31,10 +33,9 @@ def double_q_learning(lr=0.1, lr_decay=1e-4, episodes=100000, steps=1000,
     """Double Q-learning to address minimization bias."""
     Q1 = np.zeros((n_states, n_actions))
     Q2 = np.zeros((n_states, n_actions))
-    hist = []
+    rmse_hist = []
     match_hist = []
     visit_counts = np.zeros(n_states, dtype=np.int64)
-    Q_old = (Q1 + Q2).copy() if ping_ep else np.array(None)
 
     for episode in range(episodes):
         eps = eps_start + (eps_end - eps_start) * episode / max(episodes - 1, 1)
@@ -64,16 +65,15 @@ def double_q_learning(lr=0.1, lr_decay=1e-4, episodes=100000, steps=1000,
             s = s_next
         if ping_ep and episode % ping_ep == 1:
             Q_combined = (Q1 + Q2) / 2
-            delta = np.abs(Q_combined - Q_old).max()
-            hist.append((episode, delta))
+            rmse = np.sqrt(np.mean((min_q_values(Q_combined) - REF_V_ARR) ** 2))
+            rmse_hist.append((episode, rmse))
             match_pct = policy_match_fraction(Q_combined, REF_POLICY)
             match_hist.append((episode, match_pct))
-            Q_old = Q_combined
             if episode % (episodes // 10) < ping_ep:
                 print(f"  Episode {episode:>6d}/{episodes}  eps={eps:.3f}"
-                      f"  max|dQ|={delta:.4f}  match={match_pct:.1f}%")
+                      f"  RMSE={rmse:.4f}  match={match_pct:.1f}%")
 
-    return Q1, Q2, hist, match_hist, visit_counts
+    return Q1, Q2, rmse_hist, match_hist, visit_counts
 
 
 N_RUNS = 20
@@ -83,13 +83,13 @@ RUN_KWARGS = dict(lr=0.01, lr_decay=2e-4, episodes=100000, steps=1000,
 
 def _worker(seed):
     np.random.seed(seed)
-    Q1, Q2, hist, match_hist, visits = double_q_learning(**RUN_KWARGS)
+    Q1, Q2, rmse_hist, match_hist, visits = double_q_learning(**RUN_KWARGS)
     Q = (Q1 + Q2) / 2
-    x_dq = np.array([h[0] for h in hist])
-    y_dq = np.array([h[1] for h in hist])
+    x_rmse = np.array([h[0] for h in rmse_hist])
+    y_rmse = np.array([h[1] for h in rmse_hist])
     x_m = np.array([h[0] for h in match_hist])
     y_m = np.array([h[1] for h in match_hist])
-    return Q, x_dq, y_dq, x_m, y_m, visits
+    return Q, x_rmse, y_rmse, x_m, y_m, visits
 
 
 if __name__ == "__main__":
@@ -99,13 +99,13 @@ if __name__ == "__main__":
 
     all_Q = np.array([r[0] for r in results])
     Q_mean = all_Q.mean(axis=0)
-    runs_dq = [(r[1], r[2]) for r in results]
+    runs_rmse = [(r[1], r[2]) for r in results]
     runs_match = [(r[3], r[4]) for r in results]
     all_visits = np.array([r[5] for r in results])
     mean_visits = all_visits.mean(axis=0)
 
     # Save intermediate data
-    np.save("images/t2_runs_dq.npy", np.array(runs_dq, dtype=object))
+    np.save("images/t2_runs_rmse.npy", np.array(runs_rmse, dtype=object))
     np.save("images/t2_runs_match.npy", np.array(runs_match, dtype=object))
     np.save("images/t2_Q_mean.npy", Q_mean)
     np.save("images/t2_Q_all.npy", all_Q)
@@ -115,8 +115,8 @@ if __name__ == "__main__":
     print(f"\nReference V(0,0,DEPOT) = {REF_V[(0,0,DEPOT)]:.3f}")
 
     # Load Task 1 data for background comparison
-    t1_runs_dq = [(np.array(r[0], dtype=float), np.array(r[1], dtype=float))
-                  for r in np.load("images/t1_runs_dq.npy", allow_pickle=True)]
+    t1_runs_rmse = [(np.array(r[0], dtype=float), np.array(r[1], dtype=float))
+                  for r in np.load("images/t1_runs_rmse.npy", allow_pickle=True)]
     t1_runs_match = [(np.array(r[0], dtype=float), np.array(r[1], dtype=float))
                      for r in np.load("images/t1_runs_match.npy", allow_pickle=True)]
     t1_Q_mean = np.load("images/t1_Q_mean.npy")
@@ -126,10 +126,10 @@ if __name__ == "__main__":
 
     # Two-panel convergence plot
     plot_convergence_two_panel(
-        runs_dq, runs_match,
+        runs_rmse, runs_match,
         title="Double Q-Learning", savefig="t2.png",
         color="#C84430", label="Double Q",
-        bg_runs_dq=t1_runs_dq, bg_runs_match=t1_runs_match,
+        bg_runs_rmse=t1_runs_rmse, bg_runs_match=t1_runs_match,
         bg_color="C0", bg_label="Classic Q",
     )
 
