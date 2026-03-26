@@ -418,3 +418,177 @@ def plot_visits(visit_counts, title="", savefig=None):
         os.makedirs("images", exist_ok=True)
         fig.savefig(os.path.join("images", savefig), dpi=150)
     plt.show()
+
+
+def plot_value_comparison(v_hat_fn, ref_V, title="", savefig=None):
+    """3x3 grid: rows = V*, V_hat, error; columns = DEPOT, AT_1, AT_2.
+
+    Args:
+        v_hat_fn: callable(state) -> float, the approximate value.
+        ref_V: dict state -> float, the PI reference values.
+    """
+    locs = [(DEPOT, "DEPOT"), (AT_1, "AT_1"), (AT_2, "AT_2")]
+    nrows, ncols = xi1 + 1, xi2 + 1
+    row_labels = [r"$V^*(s)$ (PI)", r"$\hat{V}(s)$ (Linear FA)",
+                  r"$\hat{V} - V^*$ (error)"]
+
+    # Build grids
+    grids_star = []
+    grids_hat = []
+    grids_err = []
+    for loc, _ in locs:
+        g_star = np.zeros((nrows, ncols))
+        g_hat = np.zeros((nrows, ncols))
+        for x1 in range(nrows):
+            for x2 in range(ncols):
+                s = (x1, x2, loc)
+                g_star[x1, x2] = ref_V[s]
+                g_hat[x1, x2] = v_hat_fn(s)
+        grids_star.append(g_star)
+        grids_hat.append(g_hat)
+        grids_err.append(g_hat - g_star)
+
+    # Shared color limits for V* and V_hat rows
+    vmin_val = min(g.min() for g in grids_star + grids_hat)
+    vmax_val = max(g.max() for g in grids_star + grids_hat)
+    # Symmetric limits for error row
+    err_abs = max(abs(g).max() for g in grids_err)
+
+    fig, axes = plt.subplots(3, 4, figsize=(12, 9.5),
+                             gridspec_kw={"width_ratios": [1, 1, 1, 0.05]})
+    all_grids = [grids_star, grids_hat, grids_err]
+    cmaps = ["viridis", "viridis", "RdBu_r"]
+    vmins = [vmin_val, vmin_val, -err_abs]
+    vmaxs = [vmax_val, vmax_val, err_abs]
+
+    for row in range(3):
+        for col in range(3):
+            ax = axes[row, col]
+            im = ax.imshow(all_grids[row][col], aspect="equal", origin="upper",
+                           cmap=cmaps[row], vmin=vmins[row], vmax=vmaxs[row])
+            ax.set_xticks(range(ncols))
+            ax.set_yticks(range(nrows))
+            ax.set_xticklabels([str(j) for j in range(ncols)], fontsize=7)
+            ax.set_yticklabels([str(i) for i in range(nrows)], fontsize=7)
+            if row == 2:
+                ax.set_xlabel("x2")
+            if col == 0:
+                ax.set_ylabel("x1\n\n" + row_labels[row], fontsize=9)
+            if row == 0:
+                ax.set_title(locs[col][1], fontsize=11)
+
+            # Annotate cells with values
+            thresh = vmins[row] + 0.6 * (vmaxs[row] - vmins[row])
+            for r in range(nrows):
+                for c in range(ncols):
+                    v = all_grids[row][col][r, c]
+                    color = "white" if v > thresh else "black"
+                    if row == 2:
+                        color = "white" if abs(v) > 0.6 * err_abs else "black"
+                    fmt = f"{v:.2f}" if row == 2 else f"{v:.1f}"
+                    ax.text(c, r, fmt, ha="center", va="center",
+                            fontsize=6, color=color, fontweight="bold")
+
+        # Colorbar in the 4th column
+        fig.colorbar(im, cax=axes[row, 3])
+
+    fig.suptitle(title, fontsize=13)
+    fig.tight_layout()
+    if savefig:
+        os.makedirs("images", exist_ok=True)
+        fig.savefig(os.path.join("images", savefig), dpi=150)
+    plt.show()
+
+
+def plot_feature_decomposition(W, PHI_all, n_fourier, n_loc, n_fail,
+                               title="", savefig=None):
+    """4x3 grid: rows = Fourier, location, failure, total; cols = DEPOT/AT_1/AT_2.
+
+    Shows how the three feature groups contribute to V_hat = min_a Q(s,a).
+
+    Args:
+        W: weight matrix (n_actions, n_features).
+        PHI_all: precomputed features (n_states, n_features).
+        n_fourier, n_loc, n_fail: feature group sizes.
+    """
+    locs = [(DEPOT, "DEPOT"), (AT_1, "AT_1"), (AT_2, "AT_2")]
+    nrows, ncols = xi1 + 1, xi2 + 1
+    row_labels = ["Fourier basis", "Location indicators",
+                  "Failure indicators", "Total (sum)"]
+
+    # Feature index ranges
+    slices = [
+        slice(0, n_fourier),
+        slice(n_fourier, n_fourier + n_loc),
+        slice(n_fourier + n_loc, n_fourier + n_loc + n_fail),
+    ]
+
+    # Build grids: for each component, compute min_a [W[a, slice] @ phi[slice]]
+    # But decomposition of min is tricky - instead, find the greedy action from
+    # full Q, then decompose that action's Q-value into components
+    all_grids = [[], [], [], []]  # fourier, loc, fail, total
+    for loc, _ in locs:
+        g = [np.zeros((nrows, ncols)) for _ in range(4)]
+        for x1 in range(nrows):
+            for x2 in range(ncols):
+                s = (x1, x2, loc)
+                si = state_index[s]
+                act_idxs = feasible_action_indices[s]
+                # Greedy action under full weights
+                q_full = W[act_idxs] @ PHI_all[si]
+                best = act_idxs[np.argmin(q_full)]
+                # Decompose the greedy action's Q-value
+                for k, sl in enumerate(slices):
+                    g[k][x1, x2] = W[best, sl] @ PHI_all[si, sl]
+                g[3][x1, x2] = q_full.min()
+        for k in range(4):
+            all_grids[k].append(g[k])
+
+    fig, axes = plt.subplots(4, 4, figsize=(12, 12),
+                             gridspec_kw={"width_ratios": [1, 1, 1, 0.05]})
+    cmaps = ["viridis", "coolwarm", "coolwarm", "viridis"]
+
+    for row in range(4):
+        grids = all_grids[row]
+        if row in (1, 2):
+            abs_max = max(abs(g).max() for g in grids)
+            if abs_max == 0:
+                abs_max = 1.0
+            vmin, vmax = -abs_max, abs_max
+        else:
+            vmin = min(g.min() for g in grids)
+            vmax = max(g.max() for g in grids)
+
+        for col in range(3):
+            ax = axes[row, col]
+            im = ax.imshow(grids[col], aspect="equal", origin="upper",
+                           cmap=cmaps[row], vmin=vmin, vmax=vmax)
+            ax.set_xticks(range(ncols))
+            ax.set_yticks(range(nrows))
+            ax.set_xticklabels([str(j) for j in range(ncols)], fontsize=7)
+            ax.set_yticklabels([str(i) for i in range(nrows)], fontsize=7)
+            if row == 3:
+                ax.set_xlabel("x2")
+            if col == 0:
+                ax.set_ylabel("x1\n\n" + row_labels[row], fontsize=9)
+            if row == 0:
+                ax.set_title(locs[col][1], fontsize=11)
+
+            for r in range(nrows):
+                for c in range(ncols):
+                    v = grids[col][r, c]
+                    if row in (1, 2):
+                        color = "white" if abs(v) > 0.6 * abs_max else "black"
+                    else:
+                        color = "white" if v > vmin + 0.6 * (vmax - vmin) else "black"
+                    ax.text(c, r, f"{v:.1f}", ha="center", va="center",
+                            fontsize=6, color=color, fontweight="bold")
+
+        fig.colorbar(im, cax=axes[row, 3])
+
+    fig.suptitle(title, fontsize=13)
+    fig.tight_layout()
+    if savefig:
+        os.makedirs("images", exist_ok=True)
+        fig.savefig(os.path.join("images", savefig), dpi=150)
+    plt.show()
