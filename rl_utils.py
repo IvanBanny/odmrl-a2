@@ -274,6 +274,151 @@ def plot_bias_scatter(Q_mean, ref_V, title="", savefig=None, color="C0",
     plt.show()
 
 
+def _fmt_ep(ep):
+    """Format episode number compactly: 1k, 5k, 99.5k, etc."""
+    if ep < 1000:
+        return str(ep)
+    k = ep / 1000
+    return f"{k:g}k"
+
+
+def plot_bias_evolution(t1_runs_se, t2_runs_se,
+                        t1_snapshots, t2_snapshots,
+                        ref_v_arr,
+                        title="", savefig=None):
+    """Two-panel bias figure: signed error time-series + scatter grid.
+
+    Left: mean signed error vs episode for both methods.
+    Right: 2x3 grid of scatter plots at checkpoint episodes showing
+    min_a Q(s,a) vs V*(s), with shared axes across all subplots.
+
+    Args:
+        t1_runs_se: list of (x, y) signed error per run for classic Q.
+        t2_runs_se: list of (x, y) signed error per run for double Q.
+        t1_snapshots: list (per run) of list of (episode, Q) tuples.
+        t2_snapshots: same for double Q.
+        ref_v_arr: 1-D array of V*(s) for all states.
+    """
+    import matplotlib.gridspec as gridspec
+    from matplotlib.ticker import FuncFormatter
+
+    C_CLASSIC = "C0"
+    C_DOUBLE = "#C84430"
+    snapshot_episodes = [1000, 5000, 10000, 25000, 50000, 99500]
+
+    fig = plt.figure(figsize=(14, 5.5))
+    gs = gridspec.GridSpec(1, 2, width_ratios=[1, 1.15], wspace=0.22,
+                           left=0.065, right=0.99, top=0.88, bottom=0.11)
+
+    # --- Left panel: signed error time-series ---
+    ax_left = fig.add_subplot(gs[0])
+    _plot_runs_on_ax(ax_left, t1_runs_se, color=C_CLASSIC, label="Classic Q")
+    _plot_runs_on_ax(ax_left, t2_runs_se, color=C_DOUBLE, label="Double Q")
+    ax_left.axhline(0, color="black", linestyle="--", linewidth=1, alpha=0.5)
+    ax_left.set_xlabel("Episode")
+    ax_left.set_ylabel(r"Mean signed error  "
+                        r"$\mathbb{E}_s[\min_a Q - V^*]$")
+    ax_left.xaxis.set_major_formatter(
+        FuncFormatter(lambda x, _: _fmt_ep(int(x))))
+    ax_left.grid(True, alpha=0.3)
+    ax_left.legend(fontsize=9, loc="lower right")
+
+    # Mark snapshot episodes on the time-series
+    for ep in snapshot_episodes:
+        ax_left.axvline(ep, color="grey", linestyle=":", linewidth=0.5,
+                        alpha=0.4)
+
+    # --- Right panel: 2x3 grid of scatter mini-plots ---
+    gs_right = gridspec.GridSpecFromSubplotSpec(
+        2, 3, subplot_spec=gs[1], hspace=0.18, wspace=0.08)
+
+    # Average Q-tables at each snapshot episode across runs
+    def _mean_snapshot_q(all_snaps, ep):
+        qs = []
+        for run_snaps in all_snaps:
+            for e, q in run_snaps:
+                if e == ep:
+                    qs.append(q)
+                    break
+        if not qs:
+            return None
+        return np.mean(qs, axis=0)
+
+    # Precompute all min-Q arrays to find shared axis limits
+    all_min_qs = []
+    scatter_data = []
+    for ep in snapshot_episodes:
+        q1_mean = _mean_snapshot_q(t1_snapshots, ep)
+        q2_mean = _mean_snapshot_q(t2_snapshots, ep)
+        mq1 = min_q_values(q1_mean) if q1_mean is not None else None
+        mq2 = min_q_values(q2_mean) if q2_mean is not None else None
+        scatter_data.append((mq1, mq2))
+        if mq1 is not None:
+            all_min_qs.append(mq1)
+        if mq2 is not None:
+            all_min_qs.append(mq2)
+
+    # Shared limits: union of V* range and all Q ranges, rounded outward
+    lo = min(ref_v_arr.min(), *(a.min() for a in all_min_qs)) - 0.5
+    hi = max(ref_v_arr.max(), *(a.max() for a in all_min_qs)) + 0.5
+    # ~3 clean ticks across the shared range
+    tick_vals = np.linspace(np.ceil(lo), np.floor(hi), 4)
+
+    for idx, (ep, (mq1, mq2)) in enumerate(
+            zip(snapshot_episodes, scatter_data)):
+        row, col = divmod(idx, 3)
+        ax = fig.add_subplot(gs_right[row, col])
+
+        if mq1 is not None:
+            ax.scatter(ref_v_arr, mq1, s=8, alpha=0.25, color=C_CLASSIC,
+                       edgecolors="none", zorder=2, rasterized=True)
+        if mq2 is not None:
+            ax.scatter(ref_v_arr, mq2, s=8, alpha=0.45, color=C_DOUBLE,
+                       edgecolors="none", zorder=3, rasterized=True)
+
+        ax.plot([lo, hi], [lo, hi], "k--", linewidth=0.6, alpha=0.35)
+        ax.set_xlim(lo, hi)
+        ax.set_ylim(lo, hi)
+        ax.set_xticks(tick_vals)
+        ax.set_yticks(tick_vals)
+        ax.tick_params(labelsize=6, length=2, pad=1)
+        ax.grid(True, alpha=0.15, linewidth=0.4)
+
+        # Compact episode label in top-left corner
+        ax.text(0.05, 0.95, _fmt_ep(ep), transform=ax.transAxes,
+                fontsize=8, fontweight="bold", va="top", ha="left",
+                bbox=dict(facecolor="white", edgecolor="none", alpha=0.7,
+                          pad=1.5))
+
+        # Only label outer edges
+        if row == 1:
+            ax.set_xlabel(r"$V^*$", fontsize=8, labelpad=2)
+        else:
+            ax.set_xticklabels([])
+        if col == 0:
+            ax.set_ylabel(r"$\min_a Q$", fontsize=8, labelpad=2)
+        else:
+            ax.set_yticklabels([])
+
+    # Scatter legend: compact, tucked into bottom-right of last subplot
+    from matplotlib.lines import Line2D
+    handles = [
+        Line2D([], [], marker="o", color=C_CLASSIC, linestyle="none",
+               markersize=4, alpha=0.6, label="Classic Q"),
+        Line2D([], [], marker="o", color=C_DOUBLE, linestyle="none",
+               markersize=4, alpha=0.6, label="Double Q"),
+    ]
+    ax.legend(handles=handles, fontsize=6.5, loc="lower right",
+              handletextpad=0.3, borderpad=0.3, framealpha=0.8)
+
+    fig.suptitle(title, fontsize=12)
+    if savefig:
+        os.makedirs("images", exist_ok=True)
+        fig.savefig(os.path.join("images", savefig), dpi=150,
+                    bbox_inches="tight")
+    plt.show()
+
+
 _ACTION_SHORT = {
     "nothing": "no",
     "travel_1": "t1",

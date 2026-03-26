@@ -139,6 +139,16 @@ def compute_ve(W, visit_counts):
     return np.sum(mu * (v_hat - REF_V_ARR) ** 2)
 
 
+def min_q_linear(W):
+    """Return array of min_a Q(s,a) over feasible actions for each state."""
+    vals = np.empty(n_states)
+    for s in states:
+        si = state_index[s]
+        act_idxs = feasible_action_indices[s]
+        vals[si] = (W[act_idxs] @ PHI[si]).min()
+    return vals
+
+
 def w_to_qtable(W):
     """Expand weight matrix to (n_states, n_actions) Q-table for plotting."""
     Q = np.full((n_states, n_actions), np.inf)
@@ -166,6 +176,7 @@ def q_learning_linear(lr=0.01, lr_decay=2e-4, episodes=100_000, steps=1000,
     W = np.zeros((n_actions, N_FEATURES))
     visit_counts = np.zeros(n_states, dtype=np.int64)
     ve_hist = []
+    rmse_hist = []
     match_hist = []
 
     for episode in range(episodes):
@@ -193,16 +204,29 @@ def q_learning_linear(lr=0.01, lr_decay=2e-4, episodes=100_000, steps=1000,
 
             s = s_next
 
-        if ping_ep and episode % ping_ep == 1:
+        if ping_ep and episode % ping_ep == 0:
             ve = compute_ve(W, visit_counts)
             ve_hist.append((episode, ve))
+            rmse = np.sqrt(np.mean((min_q_linear(W) - REF_V_ARR) ** 2))
+            rmse_hist.append((episode, rmse))
             match_pct = policy_match(W, REF_POLICY)
             match_hist.append((episode, match_pct))
             if episode % (episodes // 10) < ping_ep:
                 print(f"  Episode {episode:>6d}/{episodes}  eps={eps:.4f}"
-                      f"  VE={ve:.4f}  match={match_pct:.1f}%")
+                      f"  VE={ve:.4f}  RMSE={rmse:.4f}  match={match_pct:.1f}%")
 
-    return W, ve_hist, match_hist, visit_counts
+    # Final measurement at last episode
+    if ping_ep:
+        last_ep = episodes - 1
+        if not ve_hist or ve_hist[-1][0] != last_ep:
+            ve = compute_ve(W, visit_counts)
+            ve_hist.append((last_ep, ve))
+            rmse = np.sqrt(np.mean((min_q_linear(W) - REF_V_ARR) ** 2))
+            rmse_hist.append((last_ep, rmse))
+            match_pct = policy_match(W, REF_POLICY)
+            match_hist.append((last_ep, match_pct))
+
+    return W, ve_hist, rmse_hist, match_hist, visit_counts
 
 
 # ---------------------------------------------------------------------------
@@ -216,12 +240,14 @@ RUN_KWARGS = dict(lr=0.01, lr_decay=2e-4, episodes=100_000, steps=1000,
 
 def _worker(seed):
     np.random.seed(seed)
-    W, ve_hist, match_hist, visits = q_learning_linear(**RUN_KWARGS)
+    W, ve_hist, rmse_hist, match_hist, visits = q_learning_linear(**RUN_KWARGS)
     x_ve = np.array([h[0] for h in ve_hist])
     y_ve = np.array([h[1] for h in ve_hist])
+    x_rmse = np.array([h[0] for h in rmse_hist])
+    y_rmse = np.array([h[1] for h in rmse_hist])
     x_m = np.array([h[0] for h in match_hist])
     y_m = np.array([h[1] for h in match_hist])
-    return W, x_ve, y_ve, x_m, y_m, visits
+    return W, x_ve, y_ve, x_rmse, y_rmse, x_m, y_m, visits
 
 
 if __name__ == "__main__":
@@ -240,12 +266,14 @@ if __name__ == "__main__":
     all_W = np.array([r[0] for r in results])
     W_mean = all_W.mean(axis=0)
     runs_ve = [(r[1], r[2]) for r in results]
-    runs_match = [(r[3], r[4]) for r in results]
-    all_visits = np.array([r[5] for r in results])
+    runs_rmse = [(r[3], r[4]) for r in results]
+    runs_match = [(r[5], r[6]) for r in results]
+    all_visits = np.array([r[7] for r in results])
     mean_visits = all_visits.mean(axis=0)
 
     # Save intermediate data
     np.save("images/t3_runs_ve.npy", np.array(runs_ve, dtype=object))
+    np.save("images/t3_runs_rmse.npy", np.array(runs_rmse, dtype=object))
     np.save("images/t3_runs_match.npy", np.array(runs_match, dtype=object))
     np.save("images/t3_W_mean.npy", W_mean)
     np.save("images/t3_W_all.npy", all_W)
@@ -257,13 +285,31 @@ if __name__ == "__main__":
     print_all_policy_tables(policy)
     compare_policies(policy, REF_POLICY)
 
-    # Convergence: VE (left, log) + policy match % (right, linear)
+    # Load task 1 data for background comparison
+    t1_runs_rmse = [(np.array(r[0], dtype=float), np.array(r[1], dtype=float))
+                    for r in np.load("images/t1_runs_rmse.npy", allow_pickle=True)]
+    t1_runs_match = [(np.array(r[0], dtype=float), np.array(r[1], dtype=float))
+                     for r in np.load("images/t1_runs_match.npy", allow_pickle=True)]
+
+    # Main convergence: RMSE (with task 1 background) + policy match
+    plot_convergence_two_panel(
+        runs_rmse, runs_match,
+        title=f"Linear FA Q-Learning (Fourier order {FOURIER_ORDER})",
+        xlabel="Episode",
+        savefig="t3.png",
+        color="C2", label="Linear FA",
+        bg_runs_rmse=t1_runs_rmse, bg_runs_match=t1_runs_match,
+        bg_color="C0", bg_label="Classic Q",
+    )
+
+    # Secondary convergence: VE (no background, task-3-specific) + policy match
     plot_convergence_two_panel(
         runs_ve, runs_match,
         ylabel_left=r"$\overline{\mathrm{VE}}$",
         title=f"Linear FA Q-Learning (Fourier order {FOURIER_ORDER})",
         xlabel="Episode",
-        savefig="t3.png",
+        savefig="t3_ve.png",
+        color="C2", label="Linear FA",
     )
 
     # Bias scatter (reuse tabular plotting via expanded Q-table)

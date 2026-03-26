@@ -19,6 +19,7 @@ from rl_utils import (
     min_q_values,
     plot_convergence_two_panel,
     plot_bias_scatter,
+    plot_bias_evolution,
     plot_policy_diff,
     plot_visits,
 )
@@ -35,6 +36,9 @@ def double_q_learning(lr=0.1, lr_decay=1e-4, episodes=100000, steps=1000,
     Q2 = np.zeros((n_states, n_actions))
     rmse_hist = []
     match_hist = []
+    signed_err_hist = []
+    q_snapshots = []  # list of (episode, Q_copy) at selected checkpoints
+    snapshot_episodes = {1000, 5000, 10000, 25000, 50000, 99500}
     visit_counts = np.zeros(n_states, dtype=np.int64)
 
     for episode in range(episodes):
@@ -63,17 +67,34 @@ def double_q_learning(lr=0.1, lr_decay=1e-4, episodes=100000, steps=1000,
                 Q2[s_idx, a_idx] += alpha * (td_target - Q2[s_idx, a_idx])
 
             s = s_next
-        if ping_ep and episode % ping_ep == 1:
+        if ping_ep and episode % ping_ep == 0:
             Q_combined = (Q1 + Q2) / 2
-            rmse = np.sqrt(np.mean((min_q_values(Q_combined) - REF_V_ARR) ** 2))
+            errs = min_q_values(Q_combined) - REF_V_ARR
+            rmse = np.sqrt(np.mean(errs ** 2))
             rmse_hist.append((episode, rmse))
+            signed_err_hist.append((episode, np.mean(errs)))
             match_pct = policy_match_fraction(Q_combined, REF_POLICY)
             match_hist.append((episode, match_pct))
+            if episode in snapshot_episodes:
+                q_snapshots.append((episode, Q_combined.copy()))
             if episode % (episodes // 10) < ping_ep:
                 print(f"  Episode {episode:>6d}/{episodes}  eps={eps:.3f}"
                       f"  RMSE={rmse:.4f}  match={match_pct:.1f}%")
 
-    return Q1, Q2, rmse_hist, match_hist, visit_counts
+    # Final measurement at last episode
+    if ping_ep:
+        last_ep = episodes - 1
+        if not rmse_hist or rmse_hist[-1][0] != last_ep:
+            Q_combined = (Q1 + Q2) / 2
+            errs = min_q_values(Q_combined) - REF_V_ARR
+            rmse = np.sqrt(np.mean(errs ** 2))
+            rmse_hist.append((last_ep, rmse))
+            signed_err_hist.append((last_ep, np.mean(errs)))
+            match_pct = policy_match_fraction(Q_combined, REF_POLICY)
+            match_hist.append((last_ep, match_pct))
+
+    return Q1, Q2, rmse_hist, match_hist, signed_err_hist, q_snapshots, \
+        visit_counts
 
 
 N_RUNS = 20
@@ -83,13 +104,16 @@ RUN_KWARGS = dict(lr=0.01, lr_decay=2e-4, episodes=100000, steps=1000,
 
 def _worker(seed):
     np.random.seed(seed)
-    Q1, Q2, rmse_hist, match_hist, visits = double_q_learning(**RUN_KWARGS)
+    Q1, Q2, rmse_hist, match_hist, signed_err_hist, q_snapshots, visits = \
+        double_q_learning(**RUN_KWARGS)
     Q = (Q1 + Q2) / 2
     x_rmse = np.array([h[0] for h in rmse_hist])
     y_rmse = np.array([h[1] for h in rmse_hist])
     x_m = np.array([h[0] for h in match_hist])
     y_m = np.array([h[1] for h in match_hist])
-    return Q, x_rmse, y_rmse, x_m, y_m, visits
+    x_se = np.array([h[0] for h in signed_err_hist])
+    y_se = np.array([h[1] for h in signed_err_hist])
+    return Q, x_rmse, y_rmse, x_m, y_m, x_se, y_se, q_snapshots, visits
 
 
 if __name__ == "__main__":
@@ -101,12 +125,18 @@ if __name__ == "__main__":
     Q_mean = all_Q.mean(axis=0)
     runs_rmse = [(r[1], r[2]) for r in results]
     runs_match = [(r[3], r[4]) for r in results]
-    all_visits = np.array([r[5] for r in results])
+    runs_signed_err = [(r[5], r[6]) for r in results]
+    all_snapshots = [r[7] for r in results]
+    all_visits = np.array([r[8] for r in results])
     mean_visits = all_visits.mean(axis=0)
 
     # Save intermediate data
     np.save("images/t2_runs_rmse.npy", np.array(runs_rmse, dtype=object))
     np.save("images/t2_runs_match.npy", np.array(runs_match, dtype=object))
+    np.save("images/t2_runs_signed_err.npy",
+            np.array(runs_signed_err, dtype=object))
+    np.save("images/t2_Q_snapshots.npy",
+            np.array(all_snapshots, dtype=object))
     np.save("images/t2_Q_mean.npy", Q_mean)
     np.save("images/t2_Q_all.npy", all_Q)
     np.save("images/t2_visits.npy", mean_visits)
@@ -152,4 +182,18 @@ if __name__ == "__main__":
         mean_visits,
         title="Double Q - State visitation (mean over runs)",
         savefig="t2_visits.png",
+    )
+
+    # Bias evolution: load task 1 signed error + snapshots
+    t1_runs_signed_err = [
+        (np.array(r[0], dtype=float), np.array(r[1], dtype=float))
+        for r in np.load("images/t1_runs_signed_err.npy", allow_pickle=True)]
+    t1_snapshots = np.load("images/t1_Q_snapshots.npy", allow_pickle=True)
+
+    plot_bias_evolution(
+        t1_runs_signed_err, runs_signed_err,
+        t1_snapshots, all_snapshots,
+        REF_V_ARR,
+        title="Minimization bias: Classic Q vs Double Q",
+        savefig="t2_bias_evolution.png",
     )
