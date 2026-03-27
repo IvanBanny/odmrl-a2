@@ -127,7 +127,7 @@ def simulate_reference_cost(policy, start=(0, 0, DEPOT), steps=100000):
 
 
 def _plot_runs_on_ax(ax, runs, color="C0", label=None,
-                     run_alpha=0.08, mean_alpha=1.0, mean_lw=2):
+                     run_alpha=0.08, mean_alpha=1.0, mean_lw=2,mean=True):
     """Overlay individual runs (low alpha) with mean on a single axis."""
     x_min = max(r[0][0] for r in runs)
     x_max = min(r[0][-1] for r in runs)
@@ -137,6 +137,7 @@ def _plot_runs_on_ax(ax, runs, color="C0", label=None,
         yi = np.interp(common_x, x, y)
         ys.append(yi)
         ax.plot(common_x, yi, alpha=run_alpha, color=color, linewidth=0.8)
+      
     mean_y = np.mean(ys, axis=0)
     if label is None:
         label = f"Mean ({len(runs)} runs)"
@@ -200,6 +201,29 @@ def plot_convergence_multi(runs, ylabel, title, xlabel="Episode", savefig=None):
         os.makedirs("images", exist_ok=True)
         fig.savefig(os.path.join("images", savefig), dpi=150)
     plt.show()
+
+def plot_convergence_multi_compare(runs, ylabel, title, legend, xlabel="Episode", savefig=None):
+    """Plot convergence from multiple parallel runs.
+
+    Args:
+        runs: list of (x_array, y_array) per seed.
+    Individual runs drawn at very low alpha; adds labels for every run.
+    """
+    fig, ax = plt.subplots(figsize=(8, 4))
+    colors = plt.cm.tab20c.colors
+    for i, (x, y) in enumerate(runs):
+        label = legend[i] if i < len(legend) else f"Run {i + 1}"
+        ax.plot(x, y, linewidth=1.5, label=label, color=colors[i % len(colors)])
+    ax.legend(loc="center left")
+    _apply_log_axes(ax)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    fig.tight_layout()
+    if savefig:
+        os.makedirs("images", exist_ok=True)
+        fig.savefig(os.path.join("images", savefig), dpi=150)
+    plt.show()    
 
 
 def policy_match_fraction(Q, ref_policy):

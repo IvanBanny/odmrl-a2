@@ -54,6 +54,7 @@ for s in states:
 max_policy_iterations = 50
 max_value_iterations = 1000
 delta = 1e-6
+ref_state = (0, 0, DEPOT) # Reference state
 
 g_convergence = [0 for _ in range(max_policy_iterations)] # To track average cost convergence
 
@@ -69,7 +70,7 @@ for i in range(max_policy_iterations):
             val = cost(s, pi[state_index[s]])
             for next_s in states:
                 val += P[state_index[s], action_index[pi[state_index[s]]], state_index[next_s]] * v_old[state_index[next_s]] # Transition effects   
-            if s == (0,0,DEPOT): # Reference state
+            if s == ref_state: 
                 g_new = val 
                 
             v[state_index[s]] = val - g_new # Update value function
@@ -79,6 +80,7 @@ for i in range(max_policy_iterations):
         v_old = v.copy()    
         if max_diff < delta:
             g = g_new
+            print("Value function converged after {} iterations with max_diff {:.2e}.".format(_, max_diff))
             break 
     for s in states:
         best_action = pi[state_index[s]]
