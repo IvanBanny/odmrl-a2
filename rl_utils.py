@@ -115,17 +115,6 @@ def compare_policies(policy, ref_policy, label=""):
     return len(diffs)
 
 
-def simulate_reference_cost(policy, start=(0, 0, DEPOT), steps=100000):
-    """Mean cost/step under a deterministic policy by simulation."""
-    s = start
-    total = 0.0
-    for _ in range(steps):
-        a = policy[s]
-        s, c = simulate_step(s, a)
-        total += c
-    return total / steps
-
-
 def _plot_runs_on_ax(ax, runs, color="C0", label=None,
                      run_alpha=0.08, mean_alpha=1.0, mean_lw=2,mean=True):
     """Overlay individual runs (low alpha) with mean on a single axis."""
@@ -237,36 +226,36 @@ def policy_match_fraction(Q, ref_policy):
     return match / len(states) * 100.0
 
 
-def plot_convergence_two_panel(runs_dq, runs_match,
-                               ylabel_left=r"$\max |\Delta Q|$",
+def plot_convergence_two_panel(runs_rmse, runs_match,
+                               ylabel_left=r"$\mathrm{RMSE}$ to $V^*$",
                                ylabel_right="Policy match %",
                                title="", xlabel="Episode", savefig=None,
                                color="C0", label=None,
-                               bg_runs_dq=None, bg_runs_match=None,
+                               bg_runs_rmse=None, bg_runs_match=None,
                                bg_color="C0", bg_label="Classic Q"):
-    """Two-panel convergence plot: Q-change (log) and policy match % (linear).
+    """Two-panel convergence plot: RMSE to V* (log) and policy match % (linear).
 
     Args:
-        runs_dq: list of (x, y) for max|deltaQ| per run.
+        runs_rmse: list of (x, y) for RMSE to V* per run.
         runs_match: list of (x, y) for policy match % per run.
         color: color for the main runs.
         label: label for the main mean line (default: "Mean (N runs)").
-        bg_runs_dq: optional background runs for Q-change (faint overlay).
+        bg_runs_rmse: optional background runs for RMSE (faint overlay).
         bg_runs_match: optional background runs for match % (faint overlay).
         bg_color: color for background runs.
         bg_label: legend label for background mean line.
     """
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 4.5))
 
-    # Left: max|dQ| on log scale
-    if bg_runs_dq is not None:
-        _plot_runs_on_ax(ax1, bg_runs_dq, color=bg_color, label=bg_label,
+    # Left: RMSE to V* on log scale
+    if bg_runs_rmse is not None:
+        _plot_runs_on_ax(ax1, bg_runs_rmse, color=bg_color, label=bg_label,
                          run_alpha=0.03, mean_alpha=0.35, mean_lw=1.5)
-    _plot_runs_on_ax(ax1, runs_dq, color=color, label=label)
+    _plot_runs_on_ax(ax1, runs_rmse, color=color, label=label)
     _apply_log_axes(ax1)
     ax1.set_xlabel(xlabel)
     ax1.set_ylabel(ylabel_left)
-    ax1.set_title(title + " - Q convergence")
+    ax1.set_title(title + " - RMSE convergence")
     ax1.legend()
 
     # Right: policy match % on linear scale
@@ -354,6 +343,151 @@ def plot_bias_scatter(Q_mean, ref_V, title="", savefig=None, color="C0",
     if savefig:
         os.makedirs("images", exist_ok=True)
         fig.savefig(os.path.join("images", savefig), dpi=150)
+    plt.show()
+
+
+def _fmt_ep(ep):
+    """Format episode number compactly: 1k, 5k, 99.5k, etc."""
+    if ep < 1000:
+        return str(ep)
+    k = ep / 1000
+    return f"{k:g}k"
+
+
+def plot_bias_evolution(t1_runs_se, t2_runs_se,
+                        t1_snapshots, t2_snapshots,
+                        ref_v_arr,
+                        title="", savefig=None):
+    """Two-panel bias figure: signed error time-series + scatter grid.
+
+    Left: mean signed error vs episode for both methods.
+    Right: 2x3 grid of scatter plots at checkpoint episodes showing
+    min_a Q(s,a) vs V*(s), with shared axes across all subplots.
+
+    Args:
+        t1_runs_se: list of (x, y) signed error per run for classic Q.
+        t2_runs_se: list of (x, y) signed error per run for double Q.
+        t1_snapshots: list (per run) of list of (episode, Q) tuples.
+        t2_snapshots: same for double Q.
+        ref_v_arr: 1-D array of V*(s) for all states.
+    """
+    import matplotlib.gridspec as gridspec
+    from matplotlib.ticker import FuncFormatter
+
+    C_CLASSIC = "C0"
+    C_DOUBLE = "#C84430"
+    snapshot_episodes = [1000, 5000, 10000, 25000, 50000, 99500]
+
+    fig = plt.figure(figsize=(14, 5.5))
+    gs = gridspec.GridSpec(1, 2, width_ratios=[1, 1.15], wspace=0.22,
+                           left=0.065, right=0.99, top=0.88, bottom=0.11)
+
+    # --- Left panel: signed error time-series ---
+    ax_left = fig.add_subplot(gs[0])
+    _plot_runs_on_ax(ax_left, t1_runs_se, color=C_CLASSIC, label="Classic Q")
+    _plot_runs_on_ax(ax_left, t2_runs_se, color=C_DOUBLE, label="Double Q")
+    ax_left.axhline(0, color="black", linestyle="--", linewidth=1, alpha=0.5)
+    ax_left.set_xlabel("Episode")
+    ax_left.set_ylabel(r"Mean signed error  "
+                        r"$\mathbb{E}_s[\min_a Q - V^*]$")
+    ax_left.xaxis.set_major_formatter(
+        FuncFormatter(lambda x, _: _fmt_ep(int(x))))
+    ax_left.grid(True, alpha=0.3)
+    ax_left.legend(fontsize=9, loc="lower right")
+
+    # Mark snapshot episodes on the time-series
+    for ep in snapshot_episodes:
+        ax_left.axvline(ep, color="grey", linestyle=":", linewidth=0.5,
+                        alpha=0.4)
+
+    # --- Right panel: 2x3 grid of scatter mini-plots ---
+    gs_right = gridspec.GridSpecFromSubplotSpec(
+        2, 3, subplot_spec=gs[1], hspace=0.18, wspace=0.08)
+
+    # Average Q-tables at each snapshot episode across runs
+    def _mean_snapshot_q(all_snaps, ep):
+        qs = []
+        for run_snaps in all_snaps:
+            for e, q in run_snaps:
+                if e == ep:
+                    qs.append(q)
+                    break
+        if not qs:
+            return None
+        return np.mean(qs, axis=0)
+
+    # Precompute all min-Q arrays to find shared axis limits
+    all_min_qs = []
+    scatter_data = []
+    for ep in snapshot_episodes:
+        q1_mean = _mean_snapshot_q(t1_snapshots, ep)
+        q2_mean = _mean_snapshot_q(t2_snapshots, ep)
+        mq1 = min_q_values(q1_mean) if q1_mean is not None else None
+        mq2 = min_q_values(q2_mean) if q2_mean is not None else None
+        scatter_data.append((mq1, mq2))
+        if mq1 is not None:
+            all_min_qs.append(mq1)
+        if mq2 is not None:
+            all_min_qs.append(mq2)
+
+    # Shared limits: union of V* range and all Q ranges, rounded outward
+    lo = min(ref_v_arr.min(), *(a.min() for a in all_min_qs)) - 0.5
+    hi = max(ref_v_arr.max(), *(a.max() for a in all_min_qs)) + 0.5
+    # ~3 clean ticks across the shared range
+    tick_vals = np.linspace(np.ceil(lo), np.floor(hi), 4)
+
+    for idx, (ep, (mq1, mq2)) in enumerate(
+            zip(snapshot_episodes, scatter_data)):
+        row, col = divmod(idx, 3)
+        ax = fig.add_subplot(gs_right[row, col])
+
+        if mq1 is not None:
+            ax.scatter(ref_v_arr, mq1, s=8, alpha=0.25, color=C_CLASSIC,
+                       edgecolors="none", zorder=2, rasterized=True)
+        if mq2 is not None:
+            ax.scatter(ref_v_arr, mq2, s=8, alpha=0.45, color=C_DOUBLE,
+                       edgecolors="none", zorder=3, rasterized=True)
+
+        ax.plot([lo, hi], [lo, hi], "k--", linewidth=0.6, alpha=0.35)
+        ax.set_xlim(lo, hi)
+        ax.set_ylim(lo, hi)
+        ax.set_xticks(tick_vals)
+        ax.set_yticks(tick_vals)
+        ax.tick_params(labelsize=6, length=2, pad=1)
+        ax.grid(True, alpha=0.15, linewidth=0.4)
+
+        # Compact episode label in top-left corner
+        ax.text(0.05, 0.95, _fmt_ep(ep), transform=ax.transAxes,
+                fontsize=8, fontweight="bold", va="top", ha="left",
+                bbox=dict(facecolor="white", edgecolor="none", alpha=0.7,
+                          pad=1.5))
+
+        # Only label outer edges
+        if row == 1:
+            ax.set_xlabel(r"$V^*$", fontsize=8, labelpad=2)
+        else:
+            ax.set_xticklabels([])
+        if col == 0:
+            ax.set_ylabel(r"$\min_a Q$", fontsize=8, labelpad=2)
+        else:
+            ax.set_yticklabels([])
+
+    # Scatter legend: compact, tucked into bottom-right of last subplot
+    from matplotlib.lines import Line2D
+    handles = [
+        Line2D([], [], marker="o", color=C_CLASSIC, linestyle="none",
+               markersize=4, alpha=0.6, label="Classic Q"),
+        Line2D([], [], marker="o", color=C_DOUBLE, linestyle="none",
+               markersize=4, alpha=0.6, label="Double Q"),
+    ]
+    ax.legend(handles=handles, fontsize=6.5, loc="lower right",
+              handletextpad=0.3, borderpad=0.3, framealpha=0.8)
+
+    fig.suptitle(title, fontsize=12)
+    if savefig:
+        os.makedirs("images", exist_ok=True)
+        fig.savefig(os.path.join("images", savefig), dpi=150,
+                    bbox_inches="tight")
     plt.show()
 
 
@@ -494,6 +628,180 @@ def plot_visits(visit_counts, title="", savefig=None):
             ax.set_xlabel("x2")
 
     fig.colorbar(im, cax=axes[3], label="visits")
+
+    fig.suptitle(title, fontsize=13)
+    fig.tight_layout()
+    if savefig:
+        os.makedirs("images", exist_ok=True)
+        fig.savefig(os.path.join("images", savefig), dpi=150)
+    plt.show()
+
+
+def plot_value_comparison(v_hat_fn, ref_V, title="", savefig=None):
+    """3x3 grid: rows = V*, V_hat, error; columns = DEPOT, AT_1, AT_2.
+
+    Args:
+        v_hat_fn: callable(state) -> float, the approximate value.
+        ref_V: dict state -> float, the PI reference values.
+    """
+    locs = [(DEPOT, "DEPOT"), (AT_1, "AT_1"), (AT_2, "AT_2")]
+    nrows, ncols = xi1 + 1, xi2 + 1
+    row_labels = [r"$V^*(s)$ (PI)", r"$\hat{V}(s)$ (Linear FA)",
+                  r"$\hat{V} - V^*$ (error)"]
+
+    # Build grids
+    grids_star = []
+    grids_hat = []
+    grids_err = []
+    for loc, _ in locs:
+        g_star = np.zeros((nrows, ncols))
+        g_hat = np.zeros((nrows, ncols))
+        for x1 in range(nrows):
+            for x2 in range(ncols):
+                s = (x1, x2, loc)
+                g_star[x1, x2] = ref_V[s]
+                g_hat[x1, x2] = v_hat_fn(s)
+        grids_star.append(g_star)
+        grids_hat.append(g_hat)
+        grids_err.append(g_hat - g_star)
+
+    # Shared color limits for V* and V_hat rows
+    vmin_val = min(g.min() for g in grids_star + grids_hat)
+    vmax_val = max(g.max() for g in grids_star + grids_hat)
+    # Symmetric limits for error row
+    err_abs = max(abs(g).max() for g in grids_err)
+
+    fig, axes = plt.subplots(3, 4, figsize=(12, 9.5),
+                             gridspec_kw={"width_ratios": [1, 1, 1, 0.05]})
+    all_grids = [grids_star, grids_hat, grids_err]
+    cmaps = ["viridis", "viridis", "RdBu_r"]
+    vmins = [vmin_val, vmin_val, -err_abs]
+    vmaxs = [vmax_val, vmax_val, err_abs]
+
+    for row in range(3):
+        for col in range(3):
+            ax = axes[row, col]
+            im = ax.imshow(all_grids[row][col], aspect="equal", origin="upper",
+                           cmap=cmaps[row], vmin=vmins[row], vmax=vmaxs[row])
+            ax.set_xticks(range(ncols))
+            ax.set_yticks(range(nrows))
+            ax.set_xticklabels([str(j) for j in range(ncols)], fontsize=7)
+            ax.set_yticklabels([str(i) for i in range(nrows)], fontsize=7)
+            if row == 2:
+                ax.set_xlabel("x2")
+            if col == 0:
+                ax.set_ylabel("x1\n\n" + row_labels[row], fontsize=9)
+            if row == 0:
+                ax.set_title(locs[col][1], fontsize=11)
+
+            # Annotate cells with values
+            thresh = vmins[row] + 0.6 * (vmaxs[row] - vmins[row])
+            for r in range(nrows):
+                for c in range(ncols):
+                    v = all_grids[row][col][r, c]
+                    color = "white" if v > thresh else "black"
+                    if row == 2:
+                        color = "white" if abs(v) > 0.6 * err_abs else "black"
+                    fmt = f"{v:.2f}" if row == 2 else f"{v:.1f}"
+                    ax.text(c, r, fmt, ha="center", va="center",
+                            fontsize=6, color=color, fontweight="bold")
+
+        # Colorbar in the 4th column
+        fig.colorbar(im, cax=axes[row, 3])
+
+    fig.suptitle(title, fontsize=13)
+    fig.tight_layout()
+    if savefig:
+        os.makedirs("images", exist_ok=True)
+        fig.savefig(os.path.join("images", savefig), dpi=150)
+    plt.show()
+
+
+def plot_feature_decomposition(W, PHI_all, n_fourier, n_loc, n_fail,
+                               title="", savefig=None):
+    """4x3 grid: rows = Fourier, location, failure, total; cols = DEPOT/AT_1/AT_2.
+
+    Shows how the three feature groups contribute to V_hat = min_a Q(s,a).
+
+    Args:
+        W: weight matrix (n_actions, n_features).
+        PHI_all: precomputed features (n_states, n_features).
+        n_fourier, n_loc, n_fail: feature group sizes.
+    """
+    locs = [(DEPOT, "DEPOT"), (AT_1, "AT_1"), (AT_2, "AT_2")]
+    nrows, ncols = xi1 + 1, xi2 + 1
+    row_labels = ["Fourier basis", "Location indicators",
+                  "Failure indicators", "Total (sum)"]
+
+    # Feature index ranges
+    slices = [
+        slice(0, n_fourier),
+        slice(n_fourier, n_fourier + n_loc),
+        slice(n_fourier + n_loc, n_fourier + n_loc + n_fail),
+    ]
+
+    # Build grids: for each component, compute min_a [W[a, slice] @ phi[slice]]
+    # But decomposition of min is tricky - instead, find the greedy action from
+    # full Q, then decompose that action's Q-value into components
+    all_grids = [[], [], [], []]  # fourier, loc, fail, total
+    for loc, _ in locs:
+        g = [np.zeros((nrows, ncols)) for _ in range(4)]
+        for x1 in range(nrows):
+            for x2 in range(ncols):
+                s = (x1, x2, loc)
+                si = state_index[s]
+                act_idxs = feasible_action_indices[s]
+                # Greedy action under full weights
+                q_full = W[act_idxs] @ PHI_all[si]
+                best = act_idxs[np.argmin(q_full)]
+                # Decompose the greedy action's Q-value
+                for k, sl in enumerate(slices):
+                    g[k][x1, x2] = W[best, sl] @ PHI_all[si, sl]
+                g[3][x1, x2] = q_full.min()
+        for k in range(4):
+            all_grids[k].append(g[k])
+
+    fig, axes = plt.subplots(4, 4, figsize=(12, 12),
+                             gridspec_kw={"width_ratios": [1, 1, 1, 0.05]})
+    cmaps = ["viridis", "coolwarm", "coolwarm", "viridis"]
+
+    for row in range(4):
+        grids = all_grids[row]
+        if row in (1, 2):
+            abs_max = max(abs(g).max() for g in grids)
+            if abs_max == 0:
+                abs_max = 1.0
+            vmin, vmax = -abs_max, abs_max
+        else:
+            vmin = min(g.min() for g in grids)
+            vmax = max(g.max() for g in grids)
+
+        for col in range(3):
+            ax = axes[row, col]
+            im = ax.imshow(grids[col], aspect="equal", origin="upper",
+                           cmap=cmaps[row], vmin=vmin, vmax=vmax)
+            ax.set_xticks(range(ncols))
+            ax.set_yticks(range(nrows))
+            ax.set_xticklabels([str(j) for j in range(ncols)], fontsize=7)
+            ax.set_yticklabels([str(i) for i in range(nrows)], fontsize=7)
+            if row == 3:
+                ax.set_xlabel("x2")
+            if col == 0:
+                ax.set_ylabel("x1\n\n" + row_labels[row], fontsize=9)
+            if row == 0:
+                ax.set_title(locs[col][1], fontsize=11)
+
+            for r in range(nrows):
+                for c in range(ncols):
+                    v = grids[col][r, c]
+                    if row in (1, 2):
+                        color = "white" if abs(v) > 0.6 * abs_max else "black"
+                    else:
+                        color = "white" if v > vmin + 0.6 * (vmax - vmin) else "black"
+                    ax.text(c, r, f"{v:.1f}", ha="center", va="center",
+                            fontsize=6, color=color, fontweight="bold")
+
+        fig.colorbar(im, cax=axes[row, 3])
 
     fig.suptitle(title, fontsize=13)
     fig.tight_layout()
